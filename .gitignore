@@ -20,3 +20,6 @@ Thumbs.db
 # Local project notes and Conda configuration
 /docs/
 /environment.yml
+
+# Local utility scripts
+/scripts/
