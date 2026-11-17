@@ -1,6 +1,0 @@
-name: jc4004-g19
-channels:
-  - defaults
-dependencies:
-  - python=3.12
-  - pip

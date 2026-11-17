@@ -16,3 +16,7 @@ __pycache__/
 # Local operating-system files
 .DS_Store
 Thumbs.db
+
+# Local project notes and Conda configuration
+/docs/
+/environment.yml
