@@ -1,0 +1,22 @@
+# Local Python environments
+.venv/
+venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local editor settings
+.vscode/
+.idea/
+
+# Local operating-system files
+.DS_Store
+Thumbs.db
+
+# Local project notes and Conda configuration
+/docs/
+/environment.yml
