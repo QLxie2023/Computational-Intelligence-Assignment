@@ -1,4 +1,4 @@
-"""Behavioral tests for fixed-depth search and the shared Player adapter.
+"""Behavioral tests for fixed-depth and iterative Alpha-Beta search.
 
 Tree boards contain a node label in [0][0]; they are not real Tablut positions.
 The independent oracle walks the node data directly, without Alpha-Beta bounds
@@ -328,7 +328,8 @@ class RepetitionTests(unittest.TestCase):
 class AdapterAndDeadlineTests(unittest.TestCase):
     def test_public_entry_loads_teammate_functions_and_passes_history_and_weights(self):
         game = TreeGame({"root": Node(("left", "right")), "left": Node(("repeat",)),
-                         "right": Node(("safe",)), "repeat": Node(score=99), "safe": Node(score=2)})
+                         "right": Node(("safe",)), "repeat": Node(score=99),
+                         "safe": Node(("finished",), score=2), "finished": Node(winner="A")})
         board, weights = game.board("root"), [0.5]
         history = {game.compute_hash(board, True), game.compute_hash(game.board("repeat"), True)}
         snapshot = deepcopy((board, weights, history))
@@ -336,6 +337,7 @@ class AdapterAndDeadlineTests(unittest.TestCase):
             move = search.choose_best_move(board, True, math.inf, history, weights)
         self.assertEqual(move, tree_move(1))
         self.assertEqual((board, weights, history), snapshot)
+        self.assertEqual([name for name, _ in game.evaluated], ["left", "right", "safe"])
         self.assertTrue(all(actual is weights for _, actual in game.evaluated))
 
     def test_public_entry_rejects_terminal_or_no_move_roots(self):
@@ -364,15 +366,52 @@ class AdapterAndDeadlineTests(unittest.TestCase):
             with self.assertRaises(search.SearchTimeout):
                 search.search_fixed_depth(game.board("root"), True, 1, functions=game.functions(), deadline=1)
 
-    def test_public_timeout_returns_fallback_instead_of_partially_best_move(self):
-        game = TreeGame({"root": Node(("a", "b", "c")), "a": Node(("a0",)),
-                         "b": Node(("b0",)), "c": Node(("c0",)),
-                         "a0": Node(score=1), "b0": Node(score=9), "c0": Node(score=99)})
+    def test_public_entry_deepens_beyond_two_plies_when_time_allows(self):
+        game = TreeGame({
+            "root": Node(("left", "right")),
+            "left": Node(("left_reply",), score=4), "right": Node(("right_reply",), score=1),
+            "left_reply": Node(("lost",), score=4), "right_reply": Node(("won",), score=1),
+            "lost": Node(winner="D"), "won": Node(winner="A"),
+        })
+        with patch.dict(sys.modules, teammate_modules(game)):
+            move = search.choose_best_move(game.board("root"), True, math.inf, set())
+        self.assertEqual(move, tree_move(1))
+        self.assertEqual([name for name, _ in game.evaluated],
+                         ["left", "right", "left_reply", "right_reply"])
+
+    def test_public_timeout_keeps_depth_two_when_depth_three_is_incomplete(self):
+        game = TreeGame({
+            "root": Node(("a", "b", "c")),
+            "a": Node(("a0",)), "b": Node(("b0",), score=9), "c": Node(("c0",), score=5),
+            "a0": Node(("a1",), score=1), "b0": Node(("b1",), score=2),
+            "c0": Node(("c1",), score=9),
+            "a1": Node(score=9), "b1": Node(score=5), "c1": Node(score=1),
+        })
         clock = [0.0]
         original = game.evaluate_board
 
         def delayed_last_leaf(board, weights):
-            if board[0][0] == "c0":
+            if board[0][0] == "b1":
+                clock[0] = 1.0
+            return original(board, weights)
+
+        game.evaluate_board = delayed_last_leaf
+        with patch.dict(sys.modules, teammate_modules(game)):
+            with patch("Team19_search.time.perf_counter", side_effect=lambda: clock[0]):
+                move = search.choose_best_move(game.board("root"), True, 1, set())
+        self.assertEqual([name for name, _ in game.evaluated],
+                         ["a", "b", "c", "b0", "a0", "c0", "c1", "a1", "b1"])
+        self.assertEqual(move, tree_move(2))
+
+    def test_public_timeout_before_depth_one_finishes_keeps_the_legal_fallback(self):
+        game = TreeGame({"root": Node(("a", "b", "c")), "a": Node(("a0",)),
+                         "b": Node(("b0",), score=9), "c": Node(("c0",)),
+                         "a0": Node(winner="A"), "b0": Node(winner="A"), "c0": Node(winner="A")})
+        clock = [0.0]
+        original = game.evaluate_board
+
+        def delayed_last_leaf(board, weights):
+            if board[0][0] == "c":
                 clock[0] = 2.0
             return original(board, weights)
 
@@ -380,7 +419,7 @@ class AdapterAndDeadlineTests(unittest.TestCase):
         with patch.dict(sys.modules, teammate_modules(game)):
             with patch("Team19_search.time.perf_counter", side_effect=lambda: clock[0]):
                 move = search.choose_best_move(game.board("root"), True, 1, set())
-        self.assertEqual([name for name, _ in game.evaluated], ["a0", "b0", "c0"])
+        self.assertEqual([name for name, _ in game.evaluated], ["a", "b", "c"])
         self.assertEqual(move, tree_move(0))
 
     def test_public_entry_returns_legal_fallback_when_deadline_is_already_expired(self):

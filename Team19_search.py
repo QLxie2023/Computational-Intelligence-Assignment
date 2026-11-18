@@ -1,9 +1,8 @@
-"""Fixed-depth Alpha-Beta search for Group 19, owned by member 2.
+"""Alpha-Beta search for Group 19, owned by member 2.
 
 Scores always use the attacker's perspective. The core accepts rule and
 evaluation functions so it can be tested before teammate modules are available.
-The Player adapter currently searches two plies; iterative deepening and move
-ordering can be added around this core later.
+The Player adapter uses iterative deepening; experiments can fix the depth.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ Move = list[list[int]]
 Weights = list[float] | None
 
 WIN_SCORE = 100_000.0
-DEFAULT_DEPTH = 2
+_MAX_ITERATIVE_DEPTH = 64
 _TERMINAL_SCORES = {"A": WIN_SCORE, "D": -WIN_SCORE, "DRAW": 0.0}
 
 
@@ -85,6 +84,24 @@ def search_fixed_depth(
     """
     if type(depth) is not int or depth < 0:
         raise ValueError("depth must be a non-negative integer")
+    result, _ = _search_depth(
+        board, is_attacker, depth, functions, weights, deadline, game_history,
+    )
+    return result
+
+
+def _search_depth(
+    board: Board,
+    is_attacker: bool,
+    depth: int,
+    functions: SearchFunctions,
+    weights: Weights,
+    deadline: float | None,
+    game_history: set[int] | None,
+    *,
+    playable_root_moves: list[Move] | None = None,
+) -> tuple[SearchResult, bool]:
+    """Return the depth result and whether any scored leaf used the heuristic."""
     if deadline is not None and math.isnan(deadline):
         raise ValueError("deadline must not be NaN")
     if game_history and functions.compute_hash is None:
@@ -94,6 +111,7 @@ def search_fixed_depth(
     search_path: set[int] = set()
     nodes_visited = 0
     cutoffs = 0
+    evaluated_horizon = False
 
     def check_deadline() -> None:
         if deadline is not None and time.perf_counter() >= deadline:
@@ -108,19 +126,22 @@ def search_fixed_depth(
         *,
         is_root: bool = False,
     ) -> tuple[float, Move | None]:
-        nonlocal nodes_visited, cutoffs
+        nonlocal nodes_visited, cutoffs, evaluated_horizon
         check_deadline()
         nodes_visited += 1
-        moves = functions.get_legal_moves(position, attackers_turn)
-        check_deadline()
-        winner = functions.check_winner(position, attackers_turn, bool(moves))
-        check_deadline()
-        if winner is not None:
-            if winner not in _TERMINAL_SCORES:
-                raise ValueError(f"Unexpected winner marker: {winner!r}")
-            return _TERMINAL_SCORES[winner], None
-        if not moves:
-            return 0.0, None
+        if is_root and playable_root_moves is not None:
+            moves = playable_root_moves
+        else:
+            moves = functions.get_legal_moves(position, attackers_turn)
+            check_deadline()
+            winner = functions.check_winner(position, attackers_turn, bool(moves))
+            check_deadline()
+            if winner is not None:
+                if winner not in _TERMINAL_SCORES:
+                    raise ValueError(f"Unexpected winner marker: {winner!r}")
+                return _TERMINAL_SCORES[winner], None
+            if not moves:
+                return 0.0, None
 
         position_hash = None
         if functions.compute_hash is not None:
@@ -139,6 +160,7 @@ def search_fixed_depth(
                 check_deadline()
                 if not math.isfinite(score):
                     raise ValueError("evaluate_board must return a finite score")
+                evaluated_horizon = True
                 return score, None
 
             best_score = -math.inf if attackers_turn else math.inf
@@ -166,7 +188,8 @@ def search_fixed_depth(
                 search_path.remove(position_hash)
 
     score, move = visit(board, is_attacker, depth, -math.inf, math.inf, is_root=True)
-    return SearchResult(move, score, nodes_visited, cutoffs)
+    check_deadline()
+    return SearchResult(move, score, nodes_visited, cutoffs), evaluated_horizon
 
 
 def _load_functions() -> SearchFunctions:
@@ -190,30 +213,33 @@ def choose_best_move(
     game_history: set[int],
     weights: Weights = None,
 ) -> Move:
-    """Return a legal move from one fixed-depth search using the shared API.
+    """Return the move from the deepest completed Alpha-Beta iteration.
 
     Requires the real Team19_engine and Team19_eval modules and a nonterminal
-    board with legal moves. A timeout discards the entire incomplete depth and
-    returns the first legal move. This stage does not use iterative deepening.
+    board with legal moves. The same absolute deadline applies to every depth.
+    If depth one cannot finish, return the first legal move. Search also stops
+    when the result is proven without heuristic leaves or at the recursion guard.
     """
     functions = _load_functions()
     legal_moves = functions.get_legal_moves(board, is_attacker)
     winner = functions.check_winner(board, is_attacker, bool(legal_moves))
     if winner is not None or not legal_moves:
         raise ValueError("choose_best_move requires a nonterminal board with legal moves")
-    fallback = [coordinate[:] for coordinate in legal_moves[0]]
-    try:
-        result = search_fixed_depth(
-            board,
-            is_attacker,
-            DEFAULT_DEPTH,
-            functions=functions,
-            weights=weights,
-            deadline=deadline,
-            game_history=game_history,
-        )
-    except SearchTimeout:
-        return fallback
-    if result.move is None:
-        raise RuntimeError("A completed search on a playable root did not choose a move")
-    return [coordinate[:] for coordinate in result.move]
+    best_move = legal_moves[0]
+    root_order = legal_moves
+    for depth in range(1, _MAX_ITERATIVE_DEPTH + 1):
+        try:
+            result, evaluated_horizon = _search_depth(
+                board, is_attacker, depth, functions, weights, deadline, game_history,
+                playable_root_moves=root_order,
+            )
+        except SearchTimeout:
+            break
+        if result.move is None:
+            raise RuntimeError("A completed search on a playable root did not choose a move")
+        best_move = result.move
+        if not evaluated_horizon:
+            break
+        if best_move != root_order[0]:
+            root_order = [best_move] + [move for move in legal_moves if move != best_move]
+    return [coordinate[:] for coordinate in best_move]
