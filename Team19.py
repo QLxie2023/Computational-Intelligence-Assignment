@@ -22,6 +22,7 @@ late integration mistake costs weaker moves rather than a forfeit.
 from __future__ import annotations
 
 import math
+import operator
 import time
 
 _INITIAL_BOARD = (
@@ -49,6 +50,9 @@ _MAX_STEP_FRACTION = 0.20
 # many shares are still to be handed out.
 _MOVES_PER_PIECE = 2.0
 _MIN_EXPECTED_MOVES = 16
+
+Square = tuple[int, int]
+MovePair = tuple[Square, Square]
 
 
 def _import_member(module_name: str, attribute: str):
@@ -94,19 +98,24 @@ class Player:
     def __init__(self):
         # Loaded once here, never inside the timed methods.
         self._choose_best_move = _import_member("Team19_search", "choose_best_move")
-        self._get_legal_moves = _import_member("Team19_engine", "get_legal_moves")
         self._apply_move = _import_member("Team19_engine", "apply_move")
         self._check_winner = _import_member("Team19_engine", "check_winner")
         self._compute_hash = _import_member("Team19_engine", "compute_hash")
 
         self.weights = _load_weights()
+        self.reset_game()
+
+    def reset_game(self) -> None:
+        """Start a fresh game when a harness explicitly reuses this player."""
         self.total_budget = _read_time_budget()
         self.remaining = self.total_budget
         self.moves_played = 0
         self.history: set[int] = set()
         self._last_board: list[list[str]] | None = None
+        self._last_is_attacker: bool | None = None
+        self._opening_replies: set[tuple[tuple[str, ...], ...]] = set()
         # Last exception that forced a fallback move, kept for debugging.
-        self.last_error: BaseException | None = None
+        self.last_error: Exception | None = None
 
     # =================================================
     # Referee entry points
@@ -117,7 +126,7 @@ class Player:
         return self._play(board, False)
 
     def _play(self, board: list[list[str]], is_attacker: bool) -> list[list[int]]:
-        """Always returns a move; the charged time is what was really used."""
+        """Return a move for a playable position and charge the actual time."""
         started = time.perf_counter()
         position = [list(row) for row in board]
         try:
@@ -127,11 +136,13 @@ class Player:
             # stay observable: a silent fallback hides real bugs, so the last
             # failure is kept here for tests and debugging.
             self.last_error = error
-            # Last resort: an independent generator cannot fail, so at least
-            # the referee receives a syntactically valid move.
-            move = self._emergency_move(position, is_attacker)
+            legal = self._reference_legal_moves(position, is_attacker)
+            if not legal:
+                raise
+            move = [list(square) for square in min(legal)]
             self.moves_played += 1
-            self._last_board = position
+            self._last_board = self._slide_without_captures(position, move)
+            self._last_is_attacker = is_attacker
             return move
         finally:
             self.remaining = max(0.0, self.remaining - (time.perf_counter() - started))
@@ -141,40 +152,54 @@ class Player:
     def _select_move(
         self, position: list[list[str]], is_attacker: bool, started: float,
     ) -> list[list[int]]:
-        self._start_new_game_if_needed(position)
+        seed_initial_history = self._start_new_game_if_needed(position, is_attacker)
 
-        legal = self._legal_moves(position, is_attacker)
-        self._record_opponent_position(position, is_attacker)
+        legal = self._reference_legal_moves(position, is_attacker)
+        if not legal:
+            raise ValueError("The referee must supply a board with a legal move")
+        fallback = min(legal)
+        step_budget = self._step_budget(position)
+        deadline = started + step_budget
+        bookkeeping_deadline = started + self.remaining - _RETURN_RESERVE if step_budget else started
+        if seed_initial_history and time.perf_counter() < bookkeeping_deadline:
+            self._record_opponent_position([list(row) for row in _INITIAL_BOARD], True)
+        if time.perf_counter() < bookkeeping_deadline:
+            self._record_opponent_position(position, is_attacker)
 
         chosen = None
-        step_budget = self._step_budget(position)
-        if step_budget > 0.0 and legal and self._choose_best_move is not None:
+        if self._choose_best_move is not None and time.perf_counter() < deadline:
             try:
-                candidate = self._choose_best_move(
-                    position, is_attacker, started + step_budget, set(self.history),
+                result = self._choose_best_move(
+                    [row[:] for row in position], is_attacker, deadline, set(self.history),
                     self.weights,
                 )
-            except Exception:
-                candidate = None
-            chosen = self._match_legal_move(candidate, legal)
+            except Exception as error:
+                self.last_error = error
+            else:
+                candidate = self._as_pair(result)
+                if candidate in legal:
+                    chosen = candidate
 
-        if chosen is None:
-            chosen = self._fallback_move(position, is_attacker, legal)
+        if chosen is None and time.perf_counter() < deadline:
+            chosen = self._winning_move(position, is_attacker, legal, deadline)
+        move = [list(square) for square in (chosen or fallback)]
 
-        after_move = self._record_own_position(position, chosen, is_attacker)
+        after_move = self._record_own_position(position, move, is_attacker, bookkeeping_deadline)
         self.moves_played += 1
-        self._last_board = position if after_move is None else after_move
-        return [[int(chosen[0][0]), int(chosen[0][1])],
-                [int(chosen[1][0]), int(chosen[1][1])]]
+        self._last_board = (
+            after_move if after_move is not None
+            else self._slide_without_captures(position, move)
+        )
+        self._last_is_attacker = is_attacker
+        return move
 
     # =================================================
     # Time budget
     def _step_budget(self, board: list[list[str]]) -> float:
         """Share of the remaining game budget this move may spend.
 
-        The share shrinks as the pool shrinks and as moves are used up, so the
-        budget is never exhausted by a single decision. Actual time used is
-        charged afterwards, which means unused allocation simply carries over.
+        The share uses both the remaining time and the expected moves left.
+        Actual time is charged afterwards, so unused allocation carries over.
         """
         available = self.remaining - _RETURN_RESERVE
         if available <= _MIN_THINK_TIME:
@@ -187,78 +212,63 @@ class Player:
 
     # =================================================
     # Game history
-    def _start_new_game_if_needed(self, board: list[list[str]]) -> None:
-        if self._starts_a_new_game(board):
-            self._reset_game()
+    def _start_new_game_if_needed(self, board: list[list[str]], is_attacker: bool) -> bool:
+        """Reset on known game boundaries; return whether to seed the initial hash."""
+        last = self._last_board
+        opening_reply = None
+        if not is_attacker and self._is_attack_slide(_INITIAL_BOARD, board):
+            opening_reply = tuple(tuple(row) for row in board)
 
-    def _starts_a_new_game(self, board: list[list[str]]) -> bool:
-        """Detect a fresh game on a reused instance.
-
-        Only signals that cannot fire inside a single game are used, because
-        the two failure modes are not equally bad: a missed reset keeps a dead
-        time budget and stale history, while a spurious reset refills the
-        budget mid-game and lets the referee flag a timeout.
-
-        * The first board ever seen is a new game by definition.
-        * The referee always starts from the initial position, so an exact
-          match is conclusive -- this is what the attacker sees.
-        * The defender is handed that position after one attacker move, which
-          is still recognisable: the initial board with a single attacker
-          piece relocated.
-        * Pieces are never added during a game, so a rising count means a
-          reset as well. (Captures only make it fall.)
-
-        An earlier version compared boards square by square and expected one
-        or two newly occupied squares. That broke when the opponent stepped
-        onto the square we had just vacated: the square stays occupied
-        throughout, so the only "new" square was our own landing square and a
-        mid-game board was wrongly treated as a new game.
-        """
-        if self._last_board is None:
-            return True
-        if self._is_initial_board(board):
-            return True
-        if self._is_opening_reply(board):
-            return True
-        return _piece_count(board) > _piece_count(self._last_board)
+        new_game = last is None or is_attacker != self._last_is_attacker
+        if last is not None and not new_game:
+            new_game = _piece_count(board) > _piece_count(last)
+            if is_attacker:
+                new_game = new_game or self._is_initial_board(board)
+            elif opening_reply is not None:
+                new_game = (
+                    new_game or opening_reply in self._opening_replies
+                    or not self._is_attack_slide(last, board)
+                )
+        if new_game:
+            self.reset_game()
+        if opening_reply is not None:
+            self._opening_replies.add(opening_reply)
+        return new_game and opening_reply is not None
 
     @staticmethod
-    def _is_opening_reply(board: list[list[str]]) -> bool:
-        """True for the initial position with exactly one move played.
-
-        Either side may move first in a harness, so the move is not assumed to
-        be the attacker's. A first move cannot capture, so exactly two squares
-        differ: the origin is now empty and another square holds the piece
-        that used to stand on it, on a shared rank or file.
-        """
-        if len(board) != len(_INITIAL_BOARD):
-            return False
-        if any(len(row) != len(_INITIAL_BOARD[index]) for index, row in enumerate(board)):
-            return False
-        changed = [(row, col) for row in range(len(board))
-                   for col in range(len(board[row]))
-                   if board[row][col] != _INITIAL_BOARD[row][col]]
+    def _is_attack_slide(
+        before: tuple[tuple[str, ...], ...] | list[list[str]], after: list[list[str]],
+    ) -> bool:
+        """Check if the second board could follow a single attacker slide."""
+        changed = [
+            (row, col) for row, line in enumerate(before)
+            for col, piece in enumerate(line) if piece != after[row][col]
+        ]
         if len(changed) != 2:
             return False
-        (first_row, first_col), (second_row, second_col) = changed
-        for start, end in (((first_row, first_col), (second_row, second_col)),
-                           ((second_row, second_col), (first_row, first_col))):
-            if board[start[0]][start[1]] != ".":
-                continue
-            if board[end[0]][end[1]] != _INITIAL_BOARD[start[0]][start[1]]:
-                continue
-            if start[0] == end[0] or start[1] == end[1]:
-                return True
+        start, end = changed
+        if before[start[0]][start[1]] != "A":
+            start, end = end, start
+        start_row, start_col = start
+        end_row, end_col = end
+        if (before[start_row][start_col], after[start_row][start_col],
+                before[end_row][end_col], after[end_row][end_col]) != ("A", ".", ".", "A"):
+            return False
+        if start_row == end_row:
+            return all(before[start_row][col] in (".", "X")
+                       for col in range(min(start_col, end_col) + 1, max(start_col, end_col)))
+        if start_col == end_col:
+            return all(before[row][start_col] in (".", "X")
+                       for row in range(min(start_row, end_row) + 1, max(start_row, end_row)))
         return False
 
-    def _reset_game(self) -> None:
-        self.total_budget = _read_time_budget()
-        self.remaining = self.total_budget
-        self.moves_played = 0
-        self.history = set()
-        start_hash = self._position_hash([list(row) for row in _INITIAL_BOARD], True)
-        if start_hash is not None:
-            self.history.add(start_hash)
+    @staticmethod
+    def _slide_without_captures(board: list[list[str]], move: list[list[int]]) -> list[list[str]]:
+        position = [row[:] for row in board]
+        (start_row, start_col), (end_row, end_col) = move
+        position[end_row][end_col] = position[start_row][start_col]
+        position[start_row][start_col] = "X" if (start_row, start_col) == (4, 4) else "."
+        return position
 
     def _record_opponent_position(self, board: list[list[str]], is_attacker: bool) -> None:
         position_hash = self._position_hash(board, is_attacker)
@@ -266,20 +276,21 @@ class Player:
             self.history.add(position_hash)
 
     def _record_own_position(
-        self, board: list[list[str]], move: list[list[int]], is_attacker: bool,
+        self, board: list[list[str]], move: list[list[int]], is_attacker: bool, deadline: float,
     ) -> list[list[str]] | None:
         """Record the position our move leads to and return it, if possible."""
-        if self._apply_move is None:
+        if self._apply_move is None or time.perf_counter() >= deadline:
             return None
         try:
             new_board = self._apply_move(
-                board, [[move[0][0], move[0][1]], [move[1][0], move[1][1]]], is_attacker,
+                [row[:] for row in board], [square[:] for square in move], is_attacker,
             )
         except Exception:
             return None
-        position_hash = self._position_hash(new_board, not is_attacker)
-        if position_hash is not None:
-            self.history.add(position_hash)
+        if time.perf_counter() < deadline:
+            position_hash = self._position_hash(new_board, not is_attacker)
+            if position_hash is not None:
+                self.history.add(position_hash)
         return [list(row) for row in new_board]
 
     def _position_hash(self, board: list[list[str]], is_attacker: bool) -> int | None:
@@ -292,31 +303,8 @@ class Player:
 
     # =================================================
     # Legal moves and fallbacks
-    def _legal_moves(self, board: list[list[str]], is_attacker: bool) -> list[list[list[int]]]:
-        """Engine moves first; an independent generator validates them.
-
-        A move the engine offers but the independent rules reject would lose
-        the game on the referee's illegal-move check, so it is dropped. When
-        the two disagree completely the engine list is trusted as a whole.
-        """
-        engine_moves = []
-        if self._get_legal_moves is not None:
-            try:
-                engine_moves = list(self._get_legal_moves(board, is_attacker))
-            except Exception:
-                engine_moves = []
-
-        reference = self._reference_legal_moves(board, is_attacker)
-        if not engine_moves:
-            return [[[start[0], start[1]], [end[0], end[1]]] for start, end in sorted(reference)]
-        if not reference:
-            return engine_moves
-        verified = [move for move in engine_moves
-                    if self._as_pair(move) in reference]
-        return verified or engine_moves
-
     @staticmethod
-    def _reference_legal_moves(board: list[list[str]], is_attacker: bool) -> set:
+    def _reference_legal_moves(board: list[list[str]], is_attacker: bool) -> set[MovePair]:
         """Movement rules of the referee, independent of the engine module."""
         own = ("A",) if is_attacker else ("D", "K")
         rows = len(board)
@@ -337,62 +325,36 @@ class Player:
         return moves
 
     @staticmethod
-    def _as_pair(move) -> tuple | None:
+    def _as_pair(move) -> MovePair | None:
         try:
-            return ((int(move[0][0]), int(move[0][1])),
-                    (int(move[1][0]), int(move[1][1])))
-        except Exception:
+            (start_row, start_col), (end_row, end_col) = move
+            return ((operator.index(start_row), operator.index(start_col)),
+                    (operator.index(end_row), operator.index(end_col)))
+        except (TypeError, ValueError):
             return None
 
-    def _match_legal_move(self, candidate, legal: list[list[list[int]]]):
-        """Reject anything the search returns that is not in the verified list."""
-        if candidate is None:
-            return None
-        wanted = self._as_pair(candidate)
-        if wanted is None:
-            return None
-        for move in legal:
-            if self._as_pair(move) == wanted:
-                return move
-        return None
-
-    def _fallback_move(
-        self, board: list[list[str]], is_attacker: bool, legal: list[list[list[int]]],
-    ) -> list[list[int]]:
-        if not legal:
-            # No legal move: the referee ends the game as a draw regardless.
-            return [[0, 0], [0, 1]]
-        winning = self._winning_move(board, is_attacker, legal)
-        return winning if winning is not None else legal[0]
-
-    def _winning_move(self, board: list[list[str]], is_attacker: bool, legal):
-        """Deepest fallback: still finish off an opponent when it is free."""
+    def _winning_move(
+        self, board: list[list[str]], is_attacker: bool, legal: set[MovePair], deadline: float,
+    ) -> MovePair | None:
+        """Look for an immediate win within the time left for this move."""
         if self._apply_move is None or self._check_winner is None:
             return None
         target = "A" if is_attacker else "D"
-        for move in legal:
+        for move in sorted(legal):
+            if time.perf_counter() >= deadline:
+                break
             try:
                 child = self._apply_move(
-                    board, [[move[0][0], move[0][1]], [move[1][0], move[1][1]]], is_attacker,
+                    [row[:] for row in board], [list(square) for square in move], is_attacker,
                 )
+                if time.perf_counter() >= deadline:
+                    break
                 winner = self._check_winner(child, not is_attacker, True)
             except Exception:
                 return None
-            if winner == target:
+            if winner == target and time.perf_counter() < deadline:
                 return move
         return None
-
-    def _emergency_move(self, board, is_attacker: bool) -> list[list[int]]:
-        try:
-            reference = self._reference_legal_moves(
-                [list(row) for row in board], is_attacker,
-            )
-        except Exception:
-            return [[0, 0], [0, 1]]
-        if not reference:
-            return [[0, 0], [0, 1]]
-        start, end = min(reference)
-        return [[int(start[0]), int(start[1])], [int(end[0]), int(end[1])]]
 
     @staticmethod
     def _is_initial_board(board: list[list[str]]) -> bool:
