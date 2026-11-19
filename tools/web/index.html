@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f3f5f3">
+  <title>Tablut 对弈室 · Team19</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span><strong>Tablut</strong><span class="brand-suffix">对弈室</span></span>
+        <span class="team-tag">Team19</span>
+      </div>
+      <nav aria-label="对局操作">
+        <button class="button" id="export-button" type="button" disabled>导出复盘</button>
+        <button class="button" id="save-button" type="button" disabled>存档</button>
+        <button class="button" id="load-button" type="button" disabled>读档</button>
+        <button class="button button-primary" id="new-button" type="button" disabled>新对局</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="shell layout">
+    <section class="surface board-card" aria-labelledby="game-title">
+      <div class="board-header">
+        <div>
+          <h1 id="game-title">人机对弈</h1>
+          <p id="game-meta" class="muted">连接本地棋手中…</p>
+        </div>
+        <button class="button button-outline" id="undo-button" type="button" disabled>悔棋</button>
+      </div>
+      <div class="matchup">
+        <div class="participant" id="human-card">
+          <span class="piece-sample" id="human-piece" aria-hidden="true"></span>
+          <div><strong>你</strong><span class="side-name" id="human-side">—</span></div>
+          <span class="turn-indicator" hidden>行棋</span>
+        </div>
+        <div class="participant" id="ai-card">
+          <span class="piece-sample" id="ai-piece" aria-hidden="true"></span>
+          <div><strong>Team19</strong><span class="side-name" id="ai-side">—</span></div>
+          <span class="turn-indicator" hidden>行棋</span>
+        </div>
+      </div>
+
+      <div id="play-status" class="play-status" aria-live="polite">
+        <span class="status-light" aria-hidden="true"></span>
+        <span id="play-message">正在连接…</span>
+        <button class="text-button" id="live-button" type="button" hidden>返回实战</button>
+      </div>
+      <div class="board-wrap">
+        <div id="col-labels" class="col-labels" aria-hidden="true"></div>
+        <div id="row-labels" class="row-labels" aria-hidden="true"></div>
+        <div id="board" class="board" role="group" aria-label="Tablut 九乘九棋盘"></div>
+      </div>
+      <div class="board-footer">
+        <div class="legend" aria-label="棋盘图例">
+          <span><b class="legend-a"></b>攻方</span>
+          <span><b class="legend-d"></b>守方</span>
+          <span><b class="legend-k">♚</b>国王</span>
+          <span><b class="legend-x"></b>王座</span>
+        </div>
+        <p>国王抵达任一边缘即胜</p>
+      </div>
+      <p class="capture-note" id="captures" hidden></p>
+      <div id="result" class="result" hidden></div>
+    </section>
+
+    <aside class="sidebar" aria-label="时间与 AI 分析">
+      <section class="clock-card" aria-labelledby="clock-title">
+        <div class="clock-heading">
+          <h2 id="clock-title">AI 整局剩余时间</h2>
+          <span class="clock-tag" id="clock-mode" title="Team19 棋手内部剩余时间">—</span>
+        </div>
+        <div class="clock-display">
+          <strong id="clock-left">—</strong>
+          <span id="clock-total">秒</span>
+        </div>
+        <div class="clock-track" role="meter" aria-label="AI 剩余预算" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span id="clock-fill"></span>
+        </div>
+        <div class="clock-details">
+          <div><span>最近一步分配</span><strong id="allocation">—</strong></div>
+          <div><span>最近一步用时</span><strong id="elapsed">—</strong></div>
+        </div>
+      </section>
+
+      <section class="surface inspector" aria-labelledby="inspector-title">
+        <div class="inspector-heading">
+          <h2 id="inspector-title">AI 分析</h2>
+          <span id="report-label" class="muted"></span>
+        </div>
+        <div class="tabs" role="tablist" aria-label="分析视图">
+          <button class="tab" id="tab-search" type="button" role="tab" aria-selected="true" aria-controls="analysis-content" data-tab="search">搜索轨迹</button>
+          <button class="tab" id="tab-candidates" type="button" role="tab" aria-selected="false" aria-controls="analysis-content" data-tab="candidates">候选步</button>
+          <button class="tab" id="tab-evaluation" type="button" role="tab" aria-selected="false" aria-controls="analysis-content" data-tab="evaluation">局面估值</button>
+          <button class="tab" id="tab-history" type="button" role="tab" aria-selected="false" aria-controls="analysis-content" data-tab="history">棋谱</button>
+        </div>
+        <div id="analysis-content" class="analysis-content" role="tabpanel" aria-labelledby="tab-search"></div>
+      </section>
+    </aside>
+  </main>
+  <div id="toast" class="toast" aria-live="polite" hidden></div>
+
+  <dialog id="new-dialog" aria-labelledby="new-title">
+    <form id="new-form" class="dialog-form">
+      <h2 id="new-title">新对局</h2>
+      <fieldset>
+        <legend>你执哪一方</legend>
+        <div class="side-options">
+          <label><input type="radio" name="side" value="A"><span><b class="legend-a"></b>进攻方</span></label>
+          <label><input type="radio" name="side" value="D"><span><b class="legend-d"></b>防守方</span></label>
+        </div>
+      </fieldset>
+      <label for="budget-input">AI 整局预算（秒）</label>
+      <div class="budget-controls">
+        <input id="budget-input" name="budget" type="number" min="0" step="any" required>
+        <button class="button button-outline" type="button" data-budget="60">60 秒</button>
+        <button class="button button-outline" type="button" data-budget="10">10 秒</button>
+      </div>
+      <div class="dialog-actions">
+        <button class="button button-outline" type="button" data-close>取消</button>
+        <button class="button button-primary" type="submit">开始对局</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="save-dialog" aria-labelledby="save-title">
+    <form id="save-form" class="dialog-form">
+      <h2 id="save-title">保存局面</h2>
+      <label for="save-name">存档名称</label>
+      <input id="save-name" name="name" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" placeholder="留空使用日期时间">
+      <p class="muted">支持英文字母、数字、短横和下划线。</p>
+      <div class="dialog-actions">
+        <button class="button button-outline" type="button" data-close>取消</button>
+        <button class="button button-primary" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="load-dialog" aria-labelledby="load-title">
+    <form id="load-form" class="dialog-form">
+      <h2 id="load-title">读取存档</h2>
+      <label for="save-list">本地存档</label>
+      <select id="save-list" name="name" required></select>
+      <p class="muted">载入时恢复该局棋盘、历史和剩余时间。</p>
+      <div class="dialog-actions">
+        <button class="button button-outline" type="button" data-close>取消</button>
+        <button class="button button-primary" id="load-submit" type="submit">继续对弈</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
