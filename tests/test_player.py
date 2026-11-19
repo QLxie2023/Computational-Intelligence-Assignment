@@ -28,9 +28,15 @@ class PlayerTests(unittest.TestCase):
     def setUp(self):
         self.referee = Tablut.Tablut()
         self.referee.past_positions = [self.referee.compute_zobrist_hash(True)]
-        self.enterContext(patch.object(Tablut, "TIME_BUDGET", 10.0))
+        time_budget_patch = patch.object(Tablut, "TIME_BUDGET", 10.0)
+        time_budget_patch.start()
+        self.addCleanup(time_budget_patch.stop)
         self.clock = SimpleNamespace(now=0.0)
-        self.enterContext(patch.object(Team19, "time", SimpleNamespace(perf_counter=lambda: self.clock.now)))
+        clock_patch = patch.object(
+            Team19, "time", SimpleNamespace(perf_counter=lambda: self.clock.now),
+        )
+        clock_patch.start()
+        self.addCleanup(clock_patch.stop)
         self.player = Team19.Player()
         self.player._apply_move = referee_move
         self.player._compute_hash = referee_hash
@@ -165,6 +171,52 @@ class PlayerTests(unittest.TestCase):
         self.assertIn("Game over", result)
         for error in ("Illegal move", "exceeded time", "Exception caught"):
             self.assertNotIn(error, result)
+
+
+class PlayerIntegrationTests(unittest.TestCase):
+    def assert_real_search_move(self, player):
+        referee = Tablut.Tablut()
+        search_callback = Mock(wraps=player._choose_best_move)
+        player._choose_best_move = search_callback
+        with patch.object(Tablut, "TIME_BUDGET", 10.0):
+            move = player.play_attacker(referee.board)
+        search_callback.assert_called_once()
+        self.assertIsNone(player.last_error)
+        self.assertTrue(referee.make_move(True, move))
+        self.assertTrue(player.history)
+
+    def test_valid_tuned_weights_reach_real_search_unchanged(self):
+        from Team19_eval import normalize_weights
+
+        tuned = [1_000.0, 1_100.0, 1_200.0, 1_300.0, 1_400.0, 1_500.0, 1_600.0]
+        with patch.object(Tablut, "TIME_BUDGET", 10.0), patch.dict(
+            "sys.modules", {"Team19_weights": SimpleNamespace(WEIGHTS=tuned)},
+        ):
+            player = Team19.Player()
+        self.assertEqual(player.weights, normalize_weights(tuned))
+        self.assertIsNot(player.weights, tuned)
+        self.assertIsNotNone(player._choose_best_move)
+        self.assertIsNotNone(player._apply_move)
+        self.assert_real_search_move(player)
+
+    def test_invalid_tuned_weights_fall_back_to_valid_defaults_before_real_search(self):
+        from Team19_eval import DEFAULT_WEIGHTS, normalize_weights
+
+        invalid_vectors = (
+            [1.0],
+            [float("nan")] * 7,
+            [10_001.0] * 7,
+            ["1000"] * 7,
+        )
+        expected = normalize_weights(DEFAULT_WEIGHTS)
+        for tuned in invalid_vectors:
+            with self.subTest(tuned=tuned):
+                with patch.object(Tablut, "TIME_BUDGET", 10.0), patch.dict(
+                    "sys.modules", {"Team19_weights": SimpleNamespace(WEIGHTS=tuned)},
+                ):
+                    player = Team19.Player()
+                self.assertEqual(player.weights, expected)
+                self.assert_real_search_move(player)
 
 
 if __name__ == "__main__":

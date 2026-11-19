@@ -80,16 +80,28 @@ def _load_weights() -> list[float] | None:
     Returning None is meaningful: the evaluator then applies its own defaults,
     so this file works before member 5 has produced any tuned vector.
     """
-    sources = (("Team19_weights", "WEIGHTS"), ("Team19_eval", "DEFAULT_WEIGHTS"))
-    for module_name, attribute in sources:
+    try:
+        evaluator = __import__("Team19_eval", fromlist=["DEFAULT_WEIGHTS", "normalize_weights"])
+        normalize_weights = evaluator.normalize_weights
+        default_weights = evaluator.DEFAULT_WEIGHTS
+    except Exception:
+        return None
+
+    try:
+        tuned_module = __import__("Team19_weights", fromlist=["WEIGHTS"])
+        tuned_weights = tuned_module.WEIGHTS
+    except Exception:
+        tuned_weights = None
+    if tuned_weights is not None:
         try:
-            module = __import__(module_name, fromlist=[attribute])
-            weights = [float(weight) for weight in getattr(module, attribute)]
+            return normalize_weights(tuned_weights)
         except Exception:
-            continue
-        if weights:
-            return weights
-    return None
+            pass
+
+    try:
+        return normalize_weights(default_weights)
+    except Exception:
+        return None
 
 
 class Player:
