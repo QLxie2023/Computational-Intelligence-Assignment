@@ -55,12 +55,19 @@ def evaluate_board(board: Board, weights: list[float] | None = None) -> float:
     to keep this hot path finite for diagnostic callers, although the rules
     engine should classify that state as an attacker win before evaluation.
     """
-    active_weights = _validated_weights(DEFAULT_WEIGHTS if weights is None else weights)
+    active_weights = normalize_weights(DEFAULT_WEIGHTS if weights is None else weights)
     features = _features(board)
     return float(sum(weight * feature for weight, feature in zip(active_weights, features)))
 
 
-def _validated_weights(weights: Sequence[float]) -> tuple[float, ...]:
+def normalize_weights(weights: Sequence[object]) -> list[float]:
+    """Return a validated copy of a seven-feature weight vector.
+
+    Player uses this at construction time before it gives an offline-tuned
+    vector to search.  It is also the single validation path for direct
+    evaluator calls, so a training export cannot use a broader contract than
+    the one enforced during search.
+    """
     if len(weights) != len(FEATURE_NAMES):
         raise ValueError(f"weights must contain exactly seven values in {FEATURE_NAMES!r}")
 
@@ -81,7 +88,7 @@ def _validated_weights(weights: Sequence[float]) -> tuple[float, ...]:
         if abs(number) > _MAX_WEIGHT:
             raise ValueError(f"weight {index} must be between -10,000 and 10,000")
         validated.append(number)
-    return tuple(validated)
+    return validated
 
 
 def _features(board: Board) -> tuple[float, float, float, float, float, float, float]:
