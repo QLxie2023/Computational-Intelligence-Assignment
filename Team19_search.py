@@ -19,6 +19,7 @@ Weights = list[float] | None
 
 WIN_SCORE = 100_000.0
 _MAX_ITERATIVE_DEPTH = 64
+_MAX_RETURN_RESERVE = 0.005
 _TERMINAL_SCORES = {"A": WIN_SCORE, "D": -WIN_SCORE, "DRAW": 0.0}
 
 
@@ -57,6 +58,57 @@ class SearchResult:
     cutoffs: int
 
 
+def _check_deadline(deadline: float | None) -> None:
+    if deadline is not None and time.perf_counter() >= deadline:
+        raise SearchTimeout("Search reached its deadline")
+
+
+def _tactical_order(
+    board: Board, moves: list[Move], is_attacker: bool,
+    functions: SearchFunctions, deadline: float | None,
+) -> list[Move]:
+    """Order legal Tablut moves stably, using the engine to confirm captures."""
+    last = len(board) - 1
+    enemies = ("D", "K") if is_attacker else ("A",)
+    # Only landings adjacent to an enemy with an occupied square beyond it
+    # can capture. The engine decides castle exceptions and multiple captures.
+    targets: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for r, row in enumerate(board):
+        _check_deadline(deadline)
+        for c, piece in enumerate(row):
+            if piece not in enemies:
+                continue
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                rr, cc = r + dr, c + dc
+                if (
+                    0 <= rr <= last and 0 <= cc <= last
+                    and 0 <= r - dr <= last and 0 <= c - dc <= last
+                    and board[rr][cc] == "." and board[r - dr][c - dc] != "."
+                ):
+                    targets.setdefault((rr, cc), []).append((r, c))
+
+    def priority(move: Move) -> tuple[bool, int, int]:
+        _check_deadline(deadline)
+        (r, c), (rr, cc) = move
+        escape = False
+        advance = 0
+        if board[r][c] == "K":
+            distance = min(rr, cc, last - rr, last - cc)
+            escape = distance == 0
+            advance = max(0, min(r, c, last - r, last - c) - distance)
+        captures = 0
+        wins = escape
+        if neighbours := targets.get((rr, cc)):
+            child = functions.apply_move(board, move, is_attacker)
+            for nr, nc in neighbours:
+                if child[nr][nc] == ".":
+                    captures += 1
+                    wins = wins or board[nr][nc] == "K"
+        return wins, captures, advance
+
+    return sorted(moves, key=priority, reverse=True)
+
+
 def search_fixed_depth(
     board: Board,
     is_attacker: bool,
@@ -66,6 +118,7 @@ def search_fixed_depth(
     weights: Weights = None,
     deadline: float | None = None,
     game_history: set[int] | None = None,
+    tactical_ordering: bool = False,
 ) -> SearchResult:
     """Search at most depth individual moves with an initially unbounded window.
 
@@ -81,11 +134,13 @@ def search_fixed_depth(
     A deadline is an absolute time.perf_counter() timestamp. An interruption
     raises SearchTimeout rather than returning a partially searched root.
     Callbacks are synchronous, so their running time cannot be preempted.
+    Engine order is the baseline. Set tactical_ordering=True for Tablut ordering.
     """
     if type(depth) is not int or depth < 0:
         raise ValueError("depth must be a non-negative integer")
     result, _ = _search_depth(
         board, is_attacker, depth, functions, weights, deadline, game_history,
+        tactical_ordering=tactical_ordering,
     )
     return result
 
@@ -100,6 +155,7 @@ def _search_depth(
     game_history: set[int] | None,
     *,
     playable_root_moves: list[Move] | None = None,
+    tactical_ordering: bool = False,
 ) -> tuple[SearchResult, bool]:
     """Return the depth result and whether any scored leaf used the heuristic."""
     if deadline is not None and math.isnan(deadline):
@@ -113,10 +169,6 @@ def _search_depth(
     cutoffs = 0
     evaluated_horizon = False
 
-    def check_deadline() -> None:
-        if deadline is not None and time.perf_counter() >= deadline:
-            raise SearchTimeout("Fixed-depth search exceeded its deadline")
-
     def visit(
         position: Board,
         attackers_turn: bool,
@@ -127,15 +179,15 @@ def _search_depth(
         is_root: bool = False,
     ) -> tuple[float, Move | None]:
         nonlocal nodes_visited, cutoffs, evaluated_horizon
-        check_deadline()
+        _check_deadline(deadline)
         nodes_visited += 1
         if is_root and playable_root_moves is not None:
             moves = playable_root_moves
         else:
             moves = functions.get_legal_moves(position, attackers_turn)
-            check_deadline()
+            _check_deadline(deadline)
             winner = functions.check_winner(position, attackers_turn, bool(moves))
-            check_deadline()
+            _check_deadline(deadline)
             if winner is not None:
                 if winner not in _TERMINAL_SCORES:
                     raise ValueError(f"Unexpected winner marker: {winner!r}")
@@ -146,7 +198,7 @@ def _search_depth(
         position_hash = None
         if functions.compute_hash is not None:
             position_hash = functions.compute_hash(position, attackers_turn)
-            check_deadline()
+            _check_deadline(deadline)
             if not is_root and (
                 position_hash in history or position_hash in search_path
             ):
@@ -155,9 +207,9 @@ def _search_depth(
 
         try:
             if remaining == 0:
-                check_deadline()
+                _check_deadline(deadline)
                 score = float(functions.evaluate_board(position, weights))
-                check_deadline()
+                _check_deadline(deadline)
                 if not math.isfinite(score):
                     raise ValueError("evaluate_board must return a finite score")
                 evaluated_horizon = True
@@ -165,8 +217,10 @@ def _search_depth(
 
             best_score = -math.inf if attackers_turn else math.inf
             best_move = None
+            if tactical_ordering and not (is_root and playable_root_moves is not None):
+                moves = _tactical_order(position, moves, attackers_turn, functions, deadline)
             for index, move in enumerate(moves):
-                check_deadline()
+                _check_deadline(deadline)
                 child = functions.apply_move(position, move, attackers_turn)
                 score, _ = visit(child, not attackers_turn, remaining - 1, alpha, beta)
                 # Keep the first tie: a pruned child may return only a bound.
@@ -188,7 +242,7 @@ def _search_depth(
                 search_path.remove(position_hash)
 
     score, move = visit(board, is_attacker, depth, -math.inf, math.inf, is_root=True)
-    check_deadline()
+    _check_deadline(deadline)
     return SearchResult(move, score, nodes_visited, cutoffs), evaluated_horizon
 
 
@@ -220,18 +274,25 @@ def choose_best_move(
     If depth one cannot finish, return the first legal move. Search also stops
     when the result is proven without heuristic leaves or at the recursion guard.
     """
+    # Leave time to unwind a partial iteration and hand the move back to Player.
+    available = max(0.0, deadline - time.perf_counter())
+    deadline -= min(_MAX_RETURN_RESERVE, available * 0.10)
     functions = _load_functions()
     legal_moves = functions.get_legal_moves(board, is_attacker)
     winner = functions.check_winner(board, is_attacker, bool(legal_moves))
     if winner is not None or not legal_moves:
         raise ValueError("choose_best_move requires a nonterminal board with legal moves")
     best_move = legal_moves[0]
-    root_order = legal_moves
+    try:
+        ordered_moves = _tactical_order(board, legal_moves, is_attacker, functions, deadline)
+    except SearchTimeout:
+        return [coordinate[:] for coordinate in best_move]
+    root_order = ordered_moves
     for depth in range(1, _MAX_ITERATIVE_DEPTH + 1):
         try:
             result, evaluated_horizon = _search_depth(
                 board, is_attacker, depth, functions, weights, deadline, game_history,
-                playable_root_moves=root_order,
+                playable_root_moves=root_order, tactical_ordering=True,
             )
         except SearchTimeout:
             break
@@ -241,5 +302,5 @@ def choose_best_move(
         if not evaluated_horizon:
             break
         if best_move != root_order[0]:
-            root_order = [best_move] + [move for move in legal_moves if move != best_move]
+            root_order = [best_move] + [move for move in ordered_moves if move != best_move]
     return [coordinate[:] for coordinate in best_move]
