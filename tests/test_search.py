@@ -488,6 +488,51 @@ class OfficialTacticalTests(unittest.TestCase):
             board[row][col] = piece
         return board
 
+    def test_order_places_escape_capture_and_king_advance_before_quiet_moves(self):
+        board = self.board({(3, 3): "K", (2, 6): "A", (2, 7): "D",
+                            (5, 5): "D", (7, 7): "A"})
+        quiet = [[5, 5], [5, 4]]
+        advance = [[3, 3], [2, 3]]
+        capture = [[5, 5], [2, 5]]
+        escape = [[3, 3], [0, 3]]
+        moves = [quiet, advance, capture, escape]
+        original = deepcopy(board)
+        functions = search._load_functions()
+        self.assertTrue(all(m in functions.get_legal_moves(board, False) for m in moves))
+        self.assertEqual(search._tactical_order(board, moves, False, functions, None),
+                         [escape, capture, advance, quiet])
+        self.assertEqual(moves, [quiet, advance, capture, escape])
+        self.assertEqual(board, original)
+
+    def test_adjacent_castle_king_needs_a_real_capture_to_be_promoted(self):
+        board = self.board({(3, 4): "K", (3, 3): "A", (0, 5): "A"})
+        quiet = [[0, 5], [1, 5]]
+        flank = [[0, 5], [3, 5]]
+        functions = search._load_functions()
+        self.assertEqual(search._tactical_order(board, [quiet, flank], True, functions, None),
+                         [quiet, flank])
+        board[2][4] = "A"
+        self.assertEqual(search._tactical_order(board, [quiet, flank], True, functions, None),
+                         [flank, quiet])
+
+    def test_return_reserve_discards_an_iteration_before_the_external_deadline(self):
+        game = TreeGame({"root": Node(("a", "b")), "a": Node(score=0), "b": Node(score=9)})
+        clock = [0.0]
+        evaluate = game.evaluate_board
+
+        def slow_leaf(board, weights):
+            if board[0][0] == "b":
+                clock[0] = 0.049
+            return evaluate(board, weights)
+
+        game.evaluate_board = slow_leaf
+        with patch.dict(sys.modules, teammate_modules(game)), patch(
+            "Team19_search.time.perf_counter", side_effect=lambda: clock[0]
+        ):
+            move = search.choose_best_move(game.board("root"), True, 0.05, set())
+        self.assertEqual(move, tree_move(0))
+        self.assertLess(clock[0], 0.05)
+
     def test_attacker_finds_one_move_king_capture(self):
         board = self.board({(2, 4): "K", (2, 3): "A", (0, 5): "A"})
         original = deepcopy(board)
