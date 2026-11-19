@@ -23,3 +23,7 @@ Thumbs.db
 
 # Local utility scripts
 /scripts/
+
+# Local practice data
+/tools/game_logs/
+/tools/saved_positions/

@@ -2,6 +2,42 @@
 
 JC4004 Tablut AI 小组作业。成员 2（kaaxi）负责 `Team19_search.py` 中的博弈搜索模块，成员 4 负责 `Team19.py` 中的 `Player`、时间预算与兜底逻辑。
 
+## 网页人机对弈
+
+在浏览器里和 Team19 下棋，查看每手的搜索深度、用时和候选步，并保存复盘记录。以下命令从仓库根目录运行。
+
+### 准备 Python 环境
+
+使用 **Python 3.12**，并从 `requirements.txt` 安装课程依赖。下面的 `tablut` 是示例环境名，可以换成自己的名字。已有 Python 3.12 环境时，直接激活它并检查依赖即可。
+
+```powershell
+conda create -n tablut python=3.12 pip
+conda activate tablut
+python --version
+python -m pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121
+python -m pip check
+```
+
+课程依赖清单中的 PyTorch 固定为 CUDA 12.1 版本，安装时需要对应平台的轮子。网页工具本身只用 Python 3.12 标准库，单独运行网页对弈时，有 Python 3.12 即可启动。
+
+### 启动并下棋
+
+```powershell
+python tools/play_web.py --open
+```
+
+浏览器会打开 [本地对弈室](http://127.0.0.1:8019/)。首次打开默认你执守方，Team19 先走，AI 的整局预算是 60 秒。保持终端运行，结束后在终端按 `Ctrl+C` 停止服务。
+
+- 点击 **新对局** 选择攻方或守方，也可以切换到 10 秒预算。
+- 点击自己的棋子，再点绿色落点完成走棋。**悔棋** 会恢复到你上一次落子前，包括棋盘、历史和用时。
+- 在 **AI 分析** 查看搜索轨迹、候选步、七项局面估值和棋谱。点击候选步可以预览它在落子前的棋盘上的起点和终点，再点 **返回实战** 继续。
+- 终局会显示胜负、积分和判定原因。局面重复时，棋谱会标记该局面首次出现和再次出现的手数。
+
+### 复盘日志与存档
+
+- 网页每局的 JSON 复盘日志自动写入 `tools/game_logs/`，每手落子后更新。日志包含棋谱、逐手棋盘、吃子、AI 用时和各手的搜索、候选与估值分析。点击 **导出复盘** 可下载当前记录，终局后也能导出。
+- **存档** 将进行中的局面写入 `tools/saved_positions/`。用 **读档** 选择它，可以恢复棋盘、历史和预算，接着下棋。
+
 ## 搜索模块更新
 
 - 实现 Minimax + Alpha-Beta 剪枝，进攻方最大化、防守方最小化。
@@ -99,6 +135,6 @@ game.play(Team19.Player(), Team19.Player())
 - `main`：约定用于最终集成的分支。
 
 ```bash
-git clone --branch kaaxi https://github.com/QLxie2023/Computational-Intelligence-Assignment.git
+git clone --branch kaaxi https://github.com/SCNU-ABD-23CS/Computational-Intelligence-Assignment.git
 cd Computational-Intelligence-Assignment
 ```
