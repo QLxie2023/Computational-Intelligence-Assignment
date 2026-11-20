@@ -110,6 +110,15 @@ python -m unittest discover -s tests -v
 
 `tests/test_player.py` 用官方裁判验证守方的开局误判、跨局重置、搜索结果的合法性、低预算兜底和缺少队友模块时的完整对局。正式估值接入后仍需做 10 秒与 60 秒两档的批量验收。
 
+成员 4 的批量压力验收使用未修改的官方裁判和正式引擎、估值、搜索模块。以下两条命令分别执行每方整局 10 秒和 60 秒预算各 50 局；每个工作进程复用两个 `Player` 实例，并在每局前显式调用 `reset_game()`：
+
+```powershell
+python tools/stress_player.py --budget 10 --games 50 --workers 8
+python tools/stress_player.py --budget 60 --games 50 --workers 8
+```
+
+逐局与汇总结果写入被 Git 忽略的 `tools/game_logs/player_stress_*.json`。验收统计超时、非法步、崩溃、搜索异常兜底、跨局重置失败，以及传给搜索的历史与官方裁判不一致的次数；任何一项非零都会使对应局面标记为未通过。
+
 测试仅使用标准库和仓库内的官方框架，可在正式队友模块接入前运行。课程依赖清单见 `requirements.txt`。
 
 ## 本地跑一局
