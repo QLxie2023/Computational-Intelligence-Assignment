@@ -82,7 +82,7 @@ class EvaluationFeatureTests(unittest.TestCase):
         board = board_with({(2, 2): "K", (1, 2): "A", (3, 2): "D"})
         self.assertEqual(evaluate_board(board, self.weight_for(4)), 0.0)
 
-    def test_material_low_attacker_guard_and_perimeter_features_have_their_declared_signs(self):
+    def test_material_and_low_attacker_features_have_their_declared_signs(self):
         from Team19_eval import evaluate_board
 
         material = {(4, 4): "K"}
@@ -93,12 +93,33 @@ class EvaluationFeatureTests(unittest.TestCase):
 
         scarce = board_with({(4, 4): "K", (0, 0): "A", (0, 1): "A", (0, 2): "A"})
         self.assertLess(evaluate_board(scarce, self.weight_for(1)), 0.0)
-        self.assertGreater(evaluate_board(board_with(material), self.weight_for(6)), 0.0)
 
-        guarded = board_with({
-            (4, 4): "K", (3, 4): "D", (5, 4): "D", (4, 3): "D", (4, 5): "D",
-        })
-        self.assertEqual(evaluate_board(guarded, self.weight_for(5)), -1_000.0)
+    def test_blockade_rewards_controlling_a_king_route_instead_of_standing_on_the_edge(self):
+        from Team19_eval import evaluate_board
+
+        weights = self.weight_for(6)
+        idle = board_with({(4, 4): "K", (0, 0): "A", (8, 8): "A"})
+        blocker = board_with({(4, 4): "K", (4, 7): "A", (8, 8): "A"})
+        backup = board_with({(4, 4): "K", (4, 7): "A", (4, 5): "D", (8, 8): "A"})
+        self.assertEqual(evaluate_board(idle, weights), 0.0)
+        self.assertGreater(evaluate_board(blocker, weights), evaluate_board(backup, weights))
+        self.assertGreater(evaluate_board(backup, weights), 0.0)
+
+    def test_guard_feature_rewards_releasing_a_king_lane_without_threats(self):
+        from Team19_eval import evaluate_board
+
+        weights = self.weight_for(5)
+        blocked = board_with({(4, 4): "K", (4, 3): "D", (0, 0): "A", (8, 8): "A"})
+        opened = board_with({(4, 4): "K", (3, 3): "D", (0, 0): "A", (8, 8): "A"})
+        self.assertLess(evaluate_board(opened, weights), evaluate_board(blocked, weights))
+
+    def test_guard_feature_rewards_a_guard_covering_an_attacked_axis(self):
+        from Team19_eval import evaluate_board
+
+        weights = self.weight_for(5)
+        backing = board_with({(4, 4): "K", (4, 2): "D", (4, 5): "A", (8, 8): "A"})
+        shielding = board_with({(4, 4): "K", (4, 3): "D", (4, 5): "A", (8, 8): "A"})
+        self.assertLess(evaluate_board(shielding, weights), evaluate_board(backing, weights))
 
 
 class EvaluationContractTests(unittest.TestCase):
