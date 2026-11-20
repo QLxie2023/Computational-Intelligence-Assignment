@@ -121,6 +121,41 @@ class EvaluationFeatureTests(unittest.TestCase):
         shielding = board_with({(4, 4): "K", (4, 3): "D", (4, 5): "A", (8, 8): "A"})
         self.assertLess(evaluate_board(shielding, weights), evaluate_board(backing, weights))
 
+    def test_leaving_the_guarded_ray_in_the_opening_loses_attack_value(self):
+        from Tablut import Tablut
+        from Team19_eval import evaluate_board
+
+        game = Tablut()
+        hold = evaluate_board(game.board)
+        self.assertTrue(game.make_move(True, [[1, 4], [1, 3]]))
+        self.assertLess(evaluate_board(game.board), hold)
+
+    def test_default_score_increases_as_a_reserve_blocker_approaches_a_guard(self):
+        from Team19_eval import evaluate_board
+
+        for king, guard, squares in (
+            ((4, 4), (3, 4), ((1, 3), (0, 4), (1, 4), (2, 4))),
+            ((3, 3), (3, 4), ((2, 6), (3, 7), (3, 6), (3, 5))),
+            ((4, 5), (3, 5), ((1, 6), (0, 5), (1, 5), (2, 5))),
+        ):
+            with self.subTest(king=king):
+                fixed = {king: "K", guard: "D", (0, 0): "A", (8, 8): "A"}
+                off, d4, d3, d2 = [
+                    evaluate_board(board_with({**fixed, square: "A"}))
+                    for square in squares
+                ]
+                self.assertLess(off, d4)
+                self.assertLess(d4, d3)
+                self.assertLess(d3, d2)
+
+    def test_default_score_rewards_closing_on_an_ordinary_guarded_axis(self):
+        from Team19_eval import evaluate_board
+
+        pieces = {(3, 3): "K", (3, 4): "D", (0, 0): "A", (8, 8): "A"}
+        approaching = board_with({**pieces, (3, 1): "A"})
+        adjacent = board_with({**pieces, (3, 2): "A"})
+        self.assertGreater(evaluate_board(adjacent), evaluate_board(approaching))
+
 
 class EvaluationContractTests(unittest.TestCase):
     def test_default_weights_are_used_when_no_explicit_vector_is_supplied(self):

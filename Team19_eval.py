@@ -164,8 +164,8 @@ def _king_lines(
     shields = 0
     blockade = 0.0
     for (dr, dc), ray in zip(_DIRECTIONS, _KING_RAYS[row][column]):
-        adjacent_guard = board[row + dr][column + dc] == "D"
-        shielded = adjacent_guard and board[row - dr][column - dc] == "A"
+        if board[row + dr][column + dc] == "D" and board[row - dr][column - dc] == "A":
+            shields += 1
         blocked = False
         for distance, (rr, cc) in enumerate(ray, 1):
             square = board[rr][cc]
@@ -175,15 +175,18 @@ def _king_lines(
             elif square == "A":
                 # A reserve blocker behind a guard matters only if the guard moves.
                 blockade += (9 - distance) * (0.25 if blocked else 1.0)
-                shielded = shielded or (adjacent_guard and distance <= 3)
                 blocked = True
                 break
             elif square != "X":
                 blocked = True
         if not blocked:
             routes += 1
-        shields += shielded
-    guard_cover = -(0.55 * landings / 16 + 0.45 * shields / 4)
+    guard_cover = -0.55 * landings / 16
+    if shields:
+        # A guard negates capture pressure along an ordinary sandwich axis.
+        # Keep its credit below the default gain from an attacker closing in.
+        shield_weight = 0.45 if king == _CENTER or king in _CASTLE_ADJACENT else 0.18
+        guard_cover -= shield_weight * shields / 4
     return -routes / 4.0, guard_cover, blockade / 32
 
 

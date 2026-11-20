@@ -23,7 +23,7 @@ keeps an ordinary score in `(-100000, 100000)`.
 | 2 | `king_escape_routes` | `-R/4` | Fewer direct routes to an empty edge |
 | 3 | `king_edge_proximity` | `-(1-min(distance_to_edge,4)/4)` | King farther from an edge |
 | 4 | `king_capture_pressure` | See capture geometry below | Stronger static capture setup |
-| 5 | `king_guard_cover` | `-(0.55 * L/16 + 0.45 * S/4)` | Fewer King landings and active shields |
+| 5 | `king_guard_cover` | `-(0.55 * L/16 + C * S/4)` | Fewer King landings and active shields |
 | 6 | `perimeter_blockade` | `sum((9 - d) * factor)/32` | More control of the King's escape lanes |
 
 `R` is the number of orthogonal rays from an interior King that reach an empty
@@ -33,15 +33,21 @@ because terminal adjudication belongs to search.
 
 `L` counts empty squares the King can reach along the four rays. The empty
 castle can be crossed but is not a landing. `S` counts adjacent Defenders that
-shield an axis. A guard qualifies when an Attacker is immediately across the
-King or when the first Attacker on the guard's ray is within three squares of
-the King. A guard may reduce mobility by blocking a ray.
+shield an axis by standing immediately across the King from an adjacent
+Attacker. `C` is 0.45 on or beside the castle and 0.18 elsewhere. An ordinary
+shield prevents capture-pressure credit along that axis. With the default
+weights, closing from distance two to one still gains 350 points from
+blockade and reduced King mobility, against 315 points of ordinary shield
+credit. A guard may reduce mobility by blocking a ray.
 
 Blockade considers the first Attacker at distance `d` along each ray. Its
 factor is 1 for a direct blocker and 0.25 when it stands behind a Defender.
+An Attacker behind a guard contributes through blockade. On that ray,
+moving the nearest Attacker closer increases the default score by
+`3500 * 0.25 / 32` per square when the other features are fixed.
 Attackers off the King's rays do not earn points just for standing on the
-edge. The seven weight positions remain the same. Weight vectors tuned
-against the previous formulas should be evaluated again.
+edge. Weight vectors tuned against the previous formulas should be
+evaluated again.
 
 Capture pressure follows the official King locations. At the centre it is the
 four adjacent Attackers divided by four. Adjacent to the castle it counts the
